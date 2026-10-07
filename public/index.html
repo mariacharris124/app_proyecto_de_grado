@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seguimiento de Trabajos de Grado - USB Cartagena</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .card { background: #fafafa; padding: 20px; margin-bottom: 20px; border-radius: 6px; border: 1px solid #ddd; }
+        input, textarea, select { display: block; width: 100%; margin-bottom: 12px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        label { font-weight: bold; font-size: 14px; color: #333; margin-bottom: 5px; display: block; }
+        button { background: #0066cc; color: white; border: none; padding: 10px 15px; cursor: pointer; border-radius: 4px; font-weight: bold; margin-right: 5px; }
+        button:hover { background: #004999; }
+        .btn-pdf { background: #28a745; margin-top: 10px; width: 100%; font-size: 15px; }
+        .btn-pdf:hover { background: #218838; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-warning { background: #ffc107; color: #333; }
+        .btn-warning:hover { background: #e0a800; }
+        .tutorial-item { border-bottom: 1px solid #eee; padding: 15px 0; }
+        .hidden { display: none; }
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 20px; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+
+    <div class="container">
+        <!-- LOGIN -->
+        <div id="login-section">
+            <h2>Acceso - Formato de Tutorías USB</h2>
+            <form id="login-form">
+                <input type="email" id="login-email" placeholder="Correo institucional" required>
+                <input type="password" id="login-password" placeholder="Contraseña" required>
+                <button type="submit">Ingresar al Sistema</button>
+            </form>
+        </div>
+
+        <!-- PANEL PRINCIPAL -->
+        <div id="app-section" class="hidden">
+            <header>
+                <div>
+                    <h2 id="welcome-msg">Panel USB</h2>
+                    <small id="user-role-label"></small>
+                </div>
+                <button onclick="logout()" class="btn-danger">Cerrar Sesión</button>
+            </header>
+
+            <!-- Formulario de Bitácora (Solo Docentes) -->
+            <div id="teacher-card" class="card hidden">
+                <h3 id="form-title">Registrar Sesión de Asesoría (Formato USB)</h3>
+                <form id="tutorial-form">
+                    <input type="hidden" id="edit-id">
+                    <input type="number" id="project_id" placeholder="ID del Proyecto de Grado" required>
+                    <input type="number" id="session_number" placeholder="Número de Sesión (Ej. 1, 2...)" required>
+                    
+                    <label>Fecha y Hora del Encuentro:</label>
+                    <input type="datetime-local" id="meeting_date" required>
+                    
+                    <input type="number" step="0.5" id="duration_hours" placeholder="Duración en horas (Ej. 1.5)" required>
+                    
+                    <textarea id="topics_discussed" placeholder="Avances presentados (capítulos, correcciones, matriz...)" required></textarea>
+                    <textarea id="observations" placeholder="Observaciones y sugerencias del tutor..." required></textarea>
+                    <textarea id="agreements" placeholder="Compromisos para la próxima sesión..." required></textarea>
+                    
+                    <label>Porcentaje de Similitud Antiplagio (Compilatio - Máx 25%):</label>
+                    <input type="number" step="0.01" id="similarity_percentage" placeholder="Ej. 12.5" required>
+                    
+                    <label>
+                        <input type="checkbox" id="style_compliance" style="display:inline; width:auto;"> 
+                        Cumple con Normas APA / Vancouver en plantilla institucional USB
+                    </label>
+
+                    <button type="submit" id="btn-submit" style="margin-top: 15px;">Guardar Asesoría</button>
+                    <button type="button" id="btn-cancel-edit" class="btn-danger hidden" onclick="resetForm()" style="margin-top: 15px;">Cancelar Edición</button>
+                </form>
+            </div>
+
+            <!-- HISTORIAL Y REPORTE -->
+            <div class="card">
+                <h3>Bitácora e Historial de Tutorías</h3>
+                <div id="tutorials-container">Cargando registros...</div>
+                <button class="btn-pdf" onclick="generatePDF()">📥 Descargar Formato Oficial PDF (USB)</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const SUPABASE_URL = 'https://xsvneatfyyqclkzigaxf.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_pxV9knqfO9C7PQMQl0IpZA_ll-wRB4W';
+        
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const API_URL = '/api/tutorials';
+
+        let currentSession = null;
+        let currentUserData = null;
+        let allTutorials = [];
+
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+
+            const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+            if (error) {
+                alert('Credenciales incorrectas: ' + error.message);
+                return;
+            }
+            checkUserSession();
+        });
+
+        async function checkUserSession() {
+            const { data: { session } } = await supabaseClient.auth.getSession();
+            if (session) {
+                currentSession = session;
+                const { data } = await supabaseClient.from('users').select('*').eq('id', session.user.id).single();
+                currentUserData = data;
+
+                document.getElementById('login-section').classList.add('hidden');
+                document.getElementById('app-section').classList.remove('hidden');
+                document.getElementById('welcome-msg').innerText = `Bienvenido, ${data.full_name}`;
+                document.getElementById('user-role-label').innerText = `Rol: ${data.role.toUpperCase()}`;
+
+                if (data.role === 'teacher') {
+                    document.getElementById('teacher-card').classList.remove('hidden');
+                }
+                loadTutorials();
+            }
+        }
+
+        async function logout() {
+            await supabaseClient.auth.signOut();
+            location.reload();
+        }
+
+        async function loadTutorials() {
+            const container = document.getElementById('tutorials-container');
+            try {
+                const res = await fetch(API_URL, {
+                    headers: { 'Authorization': `Bearer ${currentSession.access_token}` }
+                });
+                allTutorials = await res.json();
+
+                if (allTutorials.length === 0) {
+                    container.innerHTML = '<p>No hay asesorías registradas en la bitácora.</p>';
+                    return;
+                }
+
+                container.innerHTML = '';
+                allTutorials.forEach(tut => {
+                    container.innerHTML += `
+                        <div class="tutorial-item">
+                            <h4>Sesión #${tut.session_number} - Proyecto ID: ${tut.project_id}</h4>
+                            <p><strong>Fecha:</strong> ${new Date(tut.meeting_date).toLocaleString()} (${tut.duration_hours ?? 0} hrs)</p>
+                            <p><strong>Avances:</strong> ${tut.topics_discussed}</p>
+                            <p><strong>Observaciones:</strong> ${tut.observations ?? 'N/A'}</p>
+                            <p><strong>Compromisos:</strong> ${tut.agreements}</p>
+                            <p><strong>Antiplagio (Compilatio):</strong> ${tut.similarity_percentage ?? 0}% | <strong>Normas APA/Vancouver:</strong> ${tut.style_compliance ? '✔ Aprobado' : '❌ Pendiente'}</p>
+                            <p>Firma Docente: <strong>${tut.teacher_signed ? '✔ Firmado' : '❌ Pendiente'}</strong> | Firma Estudiante: <strong>${tut.student_signed ? '✔ Firmado' : '❌ Pendiente'}</strong></p>
+                            <div>
+                                ${getSigButton(tut)}
+                                ${currentUserData.role === 'teacher' ? `
+                                    <button class="btn-warning" onclick="prepareEdit(${tut.id})">Editar</button>
+                                    <button class="btn-danger" onclick="deleteTutorial(${tut.id})">Eliminar</button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+            } catch (err) {
+                container.innerHTML = '<p>Error al conectar con el servidor.</p>';
+            }
+        }
+
+        function getSigButton(tut) {
+            if (currentUserData.role === 'student' && !tut.student_signed) {
+                return `<button onclick="signTutorial(${tut.id}, 'student')">Firmar como Estudiante</button>`;
+            }
+            if (currentUserData.role === 'teacher' && !tut.teacher_signed) {
+                return `<button onclick="signTutorial(${tut.id}, 'teacher')">Firmar como Docente</button>`;
+            }
+            return '';
+        }
+
+        async function signTutorial(id, roleType) {
+            const res = await fetch(`${API_URL}/${id}/sign`, {
+                method: 'PATCH',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentSession.access_token}`
+                },
+                body: JSON.stringify({ role_type: roleType })
+            });
+
+            if (res.ok) {
+                alert('¡Firma registrada con éxito!');
+                loadTutorials();
+            } else {
+                const err = await res.json();
+                alert('Error: ' + err.error);
+            }
+        }
+
+        function prepareEdit(id) {
+            const tut = allTutorials.find(t => t.id === id);
+            if (!tut) return;
+
+            document.getElementById('edit-id').value = tut.id;
+            document.getElementById('project_id').value = tut.project_id;
+            document.getElementById('session_number').value = tut.session_number;
+            
+            if(tut.meeting_date) {
+                document.getElementById('meeting_date').value = tut.meeting_date.slice(0, 16);
+            }
+            
+            document.getElementById('duration_hours').value = tut.duration_hours;
+            document.getElementById('topics_discussed').value = tut.topics_discussed;
+            document.getElementById('observations').value = tut.observations || '';
+            document.getElementById('agreements').value = tut.agreements;
+            document.getElementById('similarity_percentage').value = tut.similarity_percentage;
+            document.getElementById('style_compliance').checked = tut.style_compliance;
+
+            document.getElementById('form-title').innerText = `Editar Sesión #${tut.session_number}`;
+            document.getElementById('btn-submit').innerText = 'Actualizar Asesoría';
+            document.getElementById('btn-cancel-edit').classList.remove('hidden');
+            
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function resetForm() {
+            document.getElementById('tutorial-form').reset();
+            document.getElementById('edit-id').value = '';
+            document.getElementById('form-title').innerText = 'Registrar Sesión de Asesoría (Formato USB)';
+            document.getElementById('btn-submit').innerText = 'Guardar Asesoría';
+            document.getElementById('btn-cancel-edit').classList.add('hidden');
+        }
+
+        async function deleteTutorial(id) {
+            if (!confirm('¿Estás seguro de que deseas eliminar esta asesoría de la bitácora?')) return;
+
+            try {
+                const res = await fetch(`${API_URL}/${id}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${currentSession.access_token}` }
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    alert('Asesoría eliminada correctamente.');
+                    loadTutorials();
+                } else {
+                    alert('Error del servidor al eliminar: ' + (data.error || JSON.stringify(data)));
+                }
+            } catch (err) {
+                alert('Error de red al intentar eliminar: ' + err.message);
+            }
+        }
+
+        const form = document.getElementById('tutorial-form');
+        if(form) {
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const editId = document.getElementById('edit-id').value;
+                
+                const body = {
+                    project_id: document.getElementById('project_id').value,
+                    session_number: document.getElementById('session_number').value,
+                    meeting_date: document.getElementById('meeting_date').value,
+                    duration_hours: document.getElementById('duration_hours').value,
+                    topics_discussed: document.getElementById('topics_discussed').value,
+                    observations: document.getElementById('observations').value,
+                    agreements: document.getElementById('agreements').value,
+                    similarity_percentage: document.getElementById('similarity_percentage').value,
+                    style_compliance: document.getElementById('style_compliance').checked
+                };
+
+                const url = editId ? `${API_URL}/${editId}` : API_URL;
+                const method = editId ? 'PUT' : 'POST';
+
+                try {
+                    const res = await fetch(url, {
+                        method: method,
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${currentSession.access_token}`
+                        },
+                        body: JSON.stringify(body)
+                    });
+
+                    const data = await res.json();
+
+                    if (res.ok) {
+                        alert(editId ? 'Asesoría actualizada con éxito' : 'Asesoría guardada en la bitácora correctamente');
+                        resetForm();
+                        loadTutorials();
+                    } else {
+                        alert('Error del servidor: ' + (data.error || JSON.stringify(data)));
+                    }
+                } catch (err) {
+                    alert('Error de red: ' + err.message);
+                }
+            });
+        }
+
+        async function generatePDF() {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(13);
+            doc.text("UNIVERSIDAD DE SAN BUENAVENTURA - CARTAGENA", 20, 15);
+            doc.setFontSize(10);
+            doc.text("FORMATO DE CONTROL DE ASESORÍAS DE TRABAJO DE GRADO", 20, 21);
+            
+            doc.setFontSize(8);
+            doc.setFont("helvetica", "normal");
+            doc.text(`Generado por: ${currentUserData.full_name} (${currentUserData.role})`, 20, 27);
+            doc.text(`Fecha de emisión: ${new Date().toLocaleDateString()}`, 20, 31);
+
+            let y = 40;
+            allTutorials.forEach((tut) => {
+                if (y > 250) { doc.addPage(); y = 20; }
+                
+                doc.setFont("helvetica", "bold");
+                doc.text(`Sesión #${tut.session_number} - Proyecto ID: ${tut.project_id}`, 20, y);
+                y += 5;
+                doc.setFont("helvetica", "normal");
+                doc.text(`Fecha: ${new Date(tut.meeting_date).toLocaleString()} (${tut.duration_hours ?? 0} hrs)`, 20, y);
+                y += 5;
+                doc.text(`Avances: ${tut.topics_discussed}`, 20, y);
+                y += 5;
+                doc.text(`Observaciones: ${tut.observations ?? 'N/A'}`, 20, y);
+                y += 5;
+                doc.text(`Compromisos: ${tut.agreements}`, 20, y);
+                y += 5;
+                doc.text(`Compilatio: ${tut.similarity_percentage ?? 0}% | Normas APA/Van: ${tut.style_compliance ? 'CUMPLE' : 'PENDIENTE'}`, 20, y);
+                y += 5;
+                doc.text(`Firmas -> Docente: [${tut.teacher_signed ? 'OK' : 'PENDIENTE'}] | Estudiante: [${tut.student_signed ? 'OK' : 'PENDIENTE'}]`, 20, y);
+                y += 10;
+            });
+
+            doc.save("control-asesorias-usb.pdf");
+        }
+
+        window.onload = checkUserSession;
+    </script>
+</body>
+</html>
